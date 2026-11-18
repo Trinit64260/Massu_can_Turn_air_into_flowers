@@ -1,0 +1,537 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Massu can turn air into flower</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@1,400;1,500&display=swap" rel="stylesheet">
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #030915; overscroll-behavior: none; }
+  canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; cursor: pointer; -webkit-tap-highlight-color: transparent; }
+  .line {
+    position: fixed; left: 0; right: 0; top: 11%;
+    padding: 0 7vw; text-align: center; text-wrap: balance; pointer-events: none; user-select: none; -webkit-user-select: none;
+    font-family: 'Cormorant Garamond', Georgia, 'Times New Roman', serif;
+    font-style: italic; font-weight: 400; letter-spacing: .015em; line-height: 1.15;
+    font-size: clamp(28px, 5.4vw, 66px);
+    color: #f8e9bd;
+    text-shadow: 0 0 14px rgba(255, 214, 120, .45), 0 0 42px rgba(255, 186, 80, .28), 0 2px 2px rgba(0,0,0,.35);
+    opacity: 0;
+    animation: rise 3.2s ease .5s forwards, breathe 7s ease-in-out 3.7s infinite;
+  }
+  @keyframes rise { from { opacity: 0; transform: translateY(10px); filter: blur(6px); } to { opacity: 1; transform: none; filter: none; } }
+  @keyframes breathe { 0%, 100% { opacity: 1; } 50% { opacity: .8; } }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="line">Massu can turn air into flower</div>
+
+<script>
+(() => {
+  const cv = document.getElementById('c');
+  const ctx = cv.getContext('2d');
+
+  const TAU = Math.PI * 2;
+  const GOLDEN = Math.PI * (3 - Math.sqrt(5));
+  const rand = (a, b) => a + Math.random() * (b - a);
+  const clamp = (v, a = 0, b = 1) => v < a ? a : v > b ? b : v;
+  const easeOut = k => 1 - Math.pow(1 - k, 3);
+  const easeBack = k => { const c1 = 1.5, c3 = c1 + 1; return 1 + c3 * Math.pow(k - 1, 3) + c1 * Math.pow(k - 1, 2); };
+  const gauss = () => (Math.random() + Math.random() + Math.random() - 1.5) / 1.5;
+
+  let W = 0, H = 0, DPR = 1, S = 1, mx = 0, my = 0;
+  let bg = null, glints = [], stars = [];
+  const flies = [], flowers = [], ripples = [], parts = [];
+  const MAX_FLOWERS = 42;
+  let T = 0, touched = false, nextHint = 2.6;
+
+  // ---------- glow sprites ----------
+  function sprite(r, g, b, mid = .45) {
+    const c = document.createElement('canvas'); c.width = c.height = 128;
+    const x = c.getContext('2d');
+    const gr = x.createRadialGradient(64, 64, 0, 64, 64, 64);
+    gr.addColorStop(0, `rgba(${r},${g},${b},1)`);
+    gr.addColorStop(.25, `rgba(${r},${g},${b},${mid})`);
+    gr.addColorStop(1, `rgba(${r},${g},${b},0)`);
+    x.fillStyle = gr; x.fillRect(0, 0, 128, 128);
+    return c;
+  }
+  const GOLD = sprite(255, 208, 100);
+  const WARM = sprite(255, 170, 60, .35);
+  const PALE = sprite(190, 210, 255, .3);
+  const SHADE = sprite(0, 4, 12, .6);
+
+  // ---------- layout ----------
+  function resize() {
+    DPR = Math.min(window.devicePixelRatio || 1, 2);
+    W = window.innerWidth; H = window.innerHeight;
+    cv.width = Math.round(W * DPR); cv.height = Math.round(H * DPR);
+    S = clamp(Math.min(W, H) / 760, .55, 1.35);
+    mx = W * (W > H ? .74 : .7);
+    my = H * (W > H ? .32 : .38);
+    buildBg(); buildScene();
+  }
+
+  function buildBg() {
+    bg = document.createElement('canvas');
+    bg.width = cv.width; bg.height = cv.height;
+    const g = bg.getContext('2d');
+    g.scale(DPR, DPR);
+    let gr = g.createLinearGradient(0, 0, 0, H);
+    gr.addColorStop(0, '#0c2246'); gr.addColorStop(.45, '#061632'); gr.addColorStop(1, '#020713');
+    g.fillStyle = gr; g.fillRect(0, 0, W, H);
+
+    gr = g.createRadialGradient(mx, my, 0, mx, my, Math.max(W, H) * .8);
+    gr.addColorStop(0, 'rgba(150,180,250,.30)');
+    gr.addColorStop(.22, 'rgba(70,105,190,.13)');
+    gr.addColorStop(1, 'rgba(0,0,0,0)');
+    g.fillStyle = gr; g.fillRect(0, 0, W, H);
+
+    // soft moonlight path on the water
+    const pw = Math.max(120, W * .22);
+    gr = g.createLinearGradient(mx - pw, 0, mx + pw, 0);
+    gr.addColorStop(0, 'rgba(150,180,255,0)');
+    gr.addColorStop(.5, 'rgba(150,180,255,.07)');
+    gr.addColorStop(1, 'rgba(150,180,255,0)');
+    g.fillStyle = gr; g.fillRect(mx - pw, my, pw * 2, H - my);
+
+    // vignette
+    gr = g.createRadialGradient(W / 2, H / 2, Math.min(W, H) * .3, W / 2, H / 2, Math.hypot(W, H) * .62);
+    gr.addColorStop(0, 'rgba(0,0,0,0)'); gr.addColorStop(1, 'rgba(0,0,10,.7)');
+    g.fillStyle = gr; g.fillRect(0, 0, W, H);
+  }
+
+  function buildScene() {
+    glints = [];
+    const n = Math.round(clamp(W * H / 3800, 140, 460));
+    for (let i = 0; i < n; i++) {
+      const onPath = Math.random() < .5;
+      let x, y, b, l;
+      if (onPath) {
+        y = rand(my + 8, H + 10);
+        const depth = (y - my) / Math.max(1, H - my);
+        x = mx + gauss() * (16 * S + (y - my) * .34);
+        b = rand(.35, .95) * (1 - depth * .45);
+        l = rand(6, 22) * S * (1 + depth);
+      } else {
+        x = rand(0, W); y = rand(0, H);
+        b = rand(.05, .2); l = rand(8, 32) * S;
+      }
+      glints.push({ x, y, b, l, sp: rand(.6, 2.2), ph: rand(0, TAU), w: rand(.8, 1.8) });
+    }
+    stars = [];
+    const ns = Math.round(clamp(W * H / 8000, 60, 260));
+    for (let i = 0; i < ns; i++) stars.push({ x: rand(0, W), y: rand(0, H), r: rand(.3, 1.25), sp: rand(.4, 1.8), ph: rand(0, TAU) });
+    if (!flies.length) for (let i = 0; i < 13; i++) flies.push({ x: rand(.05, .95), y: rand(.15, .95), ph: rand(0, TAU), sp: rand(.15, .35), r: rand(.08, .16) });
+  }
+
+  // ---------- sunflower varieties ----------
+  const PALETTES = [
+    { w: 3,   back: ['#a94e05', '#e48a18', '#f6b232'], front: ['#d4730a', '#fbb627', '#ffe270'], disk: 'brown' }, // classic gold
+    { w: 2,   back: ['#b8901a', '#e9cc48', '#f8e48a'], front: ['#d8b628', '#f6e066', '#fff4bc'], disk: 'green' }, // pale lemon
+    { w: 2,   back: ['#7f2a02', '#cc520c', '#ee8624'], front: ['#b0440a', '#ee7616', '#ffae48'], disk: 'brown' }, // deep amber
+    { w: 1.5, back: ['#3e0807', '#821710', '#ab3018'], front: ['#62100b', '#a92416', '#d65028'], disk: 'black' }, // velvet red
+    { w: 2,   back: ['#6e1206', '#c23e14', '#f2a826'], front: ['#8a1a0a', '#de4c18', '#ffd23a'], disk: 'black' }, // ring of fire
+    { w: 1,   back: ['#3a1806', '#743612', '#a35e28'], front: ['#55260c', '#94501e', '#cf9048'], disk: 'black' }, // bronze
+    { w: 1,   back: ['#b9a76a', '#e6dcb0', '#f8f2dc'], front: ['#d2c286', '#f2ead0', '#fffcf2'], disk: 'green' }, // moon ivory
+    { w: 1.3, back: ['#c0700a', '#f0a020', '#ffc840'], front: ['#e08a10', '#ffbe30', '#ffe27a'], disk: 'green', teddy: true } // fluffy teddy bear
+  ];
+  const SHAPES = {
+    pointed: { tipK: .78, tipW: .85, wS: 1,    LS: 1,    bend: 0,  jit: .07 },
+    round:   { tipK: .96, tipW: .72, wS: 1.15, LS: .9,   bend: 0,  jit: .06 },
+    slim:    { tipK: .74, tipW: .7,  wS: .62,  LS: 1.12, bend: 0,  jit: .08, extra: 7 },
+    frilly:  { tipK: .82, tipW: .8,  wS: 1,    LS: 1,    bend: .55, jit: .18 },
+    double:  { tipK: .8,  tipW: .85, wS: .95,  LS: 1,    bend: .15, jit: .08, rings: 3 },
+    teddy:   { tipK: .92, tipW: .75, wS: .85,  LS: 1,    bend: .35, jit: .12, rings: 4 }
+  };
+  const SHAPE_POOL = ['pointed', 'pointed', 'round', 'slim', 'frilly', 'double'];
+
+  function pick(list) {
+    const total = list.reduce((s, x) => s + x.w, 0);
+    let r = Math.random() * total;
+    for (const x of list) { if ((r -= x.w) <= 0) return x; }
+    return list[0];
+  }
+  const mix = (a, b, k) => {
+    const pa = parseInt(a.slice(1), 16), pb = parseInt(b.slice(1), 16);
+    const c = i => Math.round(((pa >> i) & 255) * (1 - k) + ((pb >> i) & 255) * k);
+    return `rgb(${c(16)},${c(8)},${c(0)})`;
+  };
+
+  function makeFlower(x, y) {
+    const pal = pick(PALETTES);
+    const shapeName = pal.teddy ? 'teddy' : SHAPE_POOL[(Math.random() * SHAPE_POOL.length) | 0];
+    const sh = SHAPES[shapeName];
+    const R = (Math.random() < .15 ? rand(28, 38) : rand(40, 68)) * S;
+    const diskScale = pal.teddy ? .17 : [.32, .4, .4, .47][(Math.random() * 4) | 0];
+    const n = Math.round(rand(17, 26)) + (sh.extra || 0);
+    const ringCount = sh.rings || 2;
+    const rings = [];
+    for (let r = 0; r < ringCount; r++) {
+      const k = ringCount === 1 ? 0 : r / (ringCount - 1);
+      const cnt = n + (pal.teddy ? r * 4 : 0);
+      const Ls = (pal.teddy ? 1 - k * .48 : 1 - k * (ringCount === 3 ? .3 : .08)) * sh.LS;
+      const cols = r === 0 ? pal.back : r === ringCount - 1 ? pal.front
+        : pal.back.map((c, i) => mix(c, pal.front[i], k));
+      const petals = [];
+      for (let i = 0; i < cnt; i++) {
+        petals.push({
+          a: (i + (r % 2 ? .5 : 0) + (r > 1 ? .25 : 0)) / cnt * TAU + rand(-.07, .07),
+          L: rand(1 - sh.jit, 1 + sh.jit * .4), w: rand(.85, 1.12),
+          d: rand(r * .08, r * .08 + .14),
+          bend: sh.bend ? rand(-1, 1) * sh.bend : 0,
+          tip: sh.bend ? rand(-1, 1) * sh.bend * .7 : 0
+        });
+      }
+      rings.push({ petals, cols, Ls, base: .75 - k * .08 });
+    }
+    const leaves = [];
+    const nl = Math.random() < .55 ? 2 : 3, la = rand(0, TAU);
+    for (let i = 0; i < nl; i++) leaves.push({ a: la + i * TAU / nl + rand(-.45, .45), L: rand(1.25, 1.5), d: rand(0, .1) });
+    return {
+      x, y, R, rings, leaves, sh, disk: pal.disk, diskScale,
+      pollen: Math.random() < .45 ? rand(.3, .6) : -1,
+      born: T, rot: rand(0, TAU), ph: rand(0, TAU),
+      vx: rand(-3, 3) * S, vy: rand(-2, 2) * S, cache: null, half: 0,
+      nextRip: T + rand(2.5, 4.5), dying: 0
+    };
+  }
+
+  function drawPetal(g, pt, p, base, Lmax, wmax, cols, sh) {
+    const k = clamp((p - pt.d) / .55);
+    if (k <= 0) return;
+    const e = easeBack(k);
+    g.save();
+    g.rotate(pt.a + (1 - easeOut(k)) * .9);
+    const L = Lmax * pt.L * e;
+    const w = wmax * pt.w * (.35 + .65 * easeOut(k));
+    const b1 = pt.bend * w, tb = pt.tip * w;
+    const gr = g.createLinearGradient(base, 0, base + L, 0);
+    gr.addColorStop(0, cols[0]); gr.addColorStop(.45, cols[1]); gr.addColorStop(1, cols[2]);
+    g.beginPath();
+    g.moveTo(base, 0);
+    g.bezierCurveTo(base + L * .22, -w + b1, base + L * sh.tipK, -w * sh.tipW + b1, base + L, tb);
+    g.bezierCurveTo(base + L * sh.tipK, w * sh.tipW + b1, base + L * .22, w + b1, base, 0);
+    g.fillStyle = gr; g.fill();
+    g.strokeStyle = 'rgba(120,55,0,.25)'; g.lineWidth = Math.max(.6, w * .1);
+    g.beginPath(); g.moveTo(base + L * .12, b1 * .3);
+    g.quadraticCurveTo(base + L * .5, b1 * .7, base + L * .86, tb * .9); g.stroke();
+    g.restore();
+  }
+
+  function drawFlower(g, f, p) {
+    const R = f.R;
+    // floating leaves
+    for (const l of f.leaves) {
+      const k = easeOut(clamp((p - l.d) / .45));
+      if (k <= 0) continue;
+      g.save(); g.rotate(l.a);
+      const L = R * l.L * k, w = R * .36 * k, s0 = R * .2;
+      const gr = g.createLinearGradient(s0, 0, s0 + L, 0);
+      gr.addColorStop(0, '#173f1d'); gr.addColorStop(.55, '#2b7230'); gr.addColorStop(1, '#3e8d3a');
+      g.beginPath(); g.moveTo(s0, 0);
+      g.bezierCurveTo(s0 + L * .35, -w, s0 + L * .82, -w * .6, s0 + L, 0);
+      g.bezierCurveTo(s0 + L * .82, w * .6, s0 + L * .35, w, s0, 0);
+      g.fillStyle = gr; g.fill();
+      g.strokeStyle = 'rgba(160,220,130,.22)'; g.lineWidth = 1;
+      g.beginPath(); g.moveTo(s0 + L * .05, 0); g.lineTo(s0 + L * .92, 0); g.stroke();
+      g.restore();
+    }
+    const rc = R * f.diskScale;
+    const teddy = f.sh === SHAPES.teddy;
+    for (const ring of f.rings) {
+      const base = teddy ? R * .1 * ring.base : rc * ring.base;
+      for (const pt of ring.petals) drawPetal(g, pt, p, base, R * ring.Ls, R * .245 * f.sh.wS, ring.cols, f.sh);
+    }
+
+    // seed head
+    const k = easeOut(clamp((p - .05) / .55));
+    if (k > 0) {
+      const r = rc * k;
+      const D = {
+        brown: ['#6e5d1d', '#4a2d0c', '#281304', ['#351a06', '#4a2809', '#7c4b15']],
+        green: ['#7f8a2a', '#4f4a12', '#2a1a05', ['#3a2a08', '#4f3c0e', '#8a7a22']],
+        black: ['#3e2a0c', '#221204', '#120802', ['#1c0d03', '#2c1606', '#5a3410']]
+      }[f.disk];
+      let gr = g.createRadialGradient(0, 0, 0, 0, 0, r * 1.14);
+      gr.addColorStop(0, D[0]); gr.addColorStop(.35, D[1]); gr.addColorStop(.86, D[2]); gr.addColorStop(1, 'rgba(20,10,2,0)');
+      g.fillStyle = gr; g.beginPath(); g.arc(0, 0, r * 1.14, 0, TAU); g.fill();
+      const N = Math.round(120 + R * f.diskScale * 4.5);
+      const c = r / Math.sqrt(N);
+      const shown = N * clamp((p - .15) / .6);
+      const greenMid = f.disk === 'green' ? .3 : .16;
+      for (let i = 1; i < shown; i++) {
+        const rr = c * Math.sqrt(i), th = i * GOLDEN, t = i / N;
+        if (t < greenMid) g.fillStyle = `rgb(${(124 - t * 150) | 0},${(122 - t * 160) | 0},34)`;
+        else if (f.pollen > 0 && t > f.pollen && t < f.pollen + .09) g.fillStyle = i % 3 ? '#d9a531' : '#f2c84a';
+        else g.fillStyle = (i % 9 === 0) ? D[3][2] : (i % 4 === 0 ? D[3][1] : D[3][0]);
+        g.beginPath(); g.arc(Math.cos(th) * rr, Math.sin(th) * rr, c * .52, 0, TAU); g.fill();
+      }
+      gr = g.createRadialGradient(-r * .35, -r * .35, 0, -r * .35, -r * .35, r * 1.1);
+      gr.addColorStop(0, 'rgba(255,230,160,.2)'); gr.addColorStop(1, 'rgba(255,230,160,0)');
+      g.fillStyle = gr; g.beginPath(); g.arc(0, 0, r, 0, TAU); g.fill();
+    }
+  }
+
+  function cacheFlower(f) {
+    const h = f.R * 1.85;
+    const c = document.createElement('canvas');
+    c.width = c.height = Math.ceil(h * 2 * DPR);
+    const g = c.getContext('2d');
+    g.scale(DPR, DPR); g.translate(h, h);
+    drawFlower(g, f, 1);
+    f.cache = c; f.half = h;
+  }
+
+  // ---------- spawning ----------
+  function addRipple(x, y, r0, r1, dur, a, delay = 0, gold = false) {
+    ripples.push({ x, y, r0, r1, dur, a, born: T + delay, gold });
+  }
+
+  function spawn(x, y) {
+    const f = makeFlower(x, y);
+    flowers.push(f);
+    // air gathering into a point
+    for (let i = 0; i < 48; i++) {
+      parts.push({ kind: 'in', x0: x, y0: y, r0: rand(60, 175) * S, a0: rand(0, TAU),
+        spin: rand(1.4, 3) * (Math.random() < .5 ? -1 : 1), born: T + rand(0, .15), dur: rand(.42, .7), size: rand(5, 12) * S });
+    }
+    // sparkle burst as it blooms
+    for (let i = 0; i < 26; i++) {
+      const a = rand(0, TAU), sp = rand(40, 140) * S;
+      parts.push({ kind: 'out', x, y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, born: T + .55, life: rand(.8, 1.7), size: rand(4, 10) * S });
+    }
+    addRipple(x, y, 4 * S, f.R * 4.2, 2.8, .55, .45);
+    addRipple(x, y, 4 * S, f.R * 3.0, 2.6, .35, .75);
+
+    const alive = flowers.filter(q => !q.dying);
+    if (alive.length > MAX_FLOWERS) alive[0].dying = T;
+  }
+
+  // ---------- input ----------
+  const pointers = new Map();
+  cv.addEventListener('pointerdown', e => {
+    e.preventDefault();
+    touched = true;
+    spawn(e.clientX, e.clientY);
+    pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    try { cv.setPointerCapture(e.pointerId); } catch (_) {}
+  });
+  cv.addEventListener('pointermove', e => {
+    const p = pointers.get(e.pointerId);
+    if (!p) return;
+    if (Math.hypot(e.clientX - p.x, e.clientY - p.y) > 105 * S) {
+      spawn(e.clientX, e.clientY);
+      p.x = e.clientX; p.y = e.clientY;
+    }
+  });
+  const up = e => pointers.delete(e.pointerId);
+  cv.addEventListener('pointerup', up);
+  cv.addEventListener('pointercancel', up);
+  window.addEventListener('resize', resize);
+
+  // ---------- update ----------
+  function update(dt) {
+    for (const f of flowers) {
+      f.vx += rand(-1, 1) * dt * 3 * S;
+      f.vy += rand(-1, 1) * dt * 3 * S;
+      const vmax = 7 * S, v = Math.hypot(f.vx, f.vy);
+      if (v > vmax) { f.vx *= vmax / v; f.vy *= vmax / v; }
+      const m = f.R * .9;
+      if (f.x < m) f.vx += (m - f.x) * dt * .6;
+      if (f.x > W - m) f.vx -= (f.x - (W - m)) * dt * .6;
+      if (f.y < m) f.vy += (m - f.y) * dt * .6;
+      if (f.y > H - m) f.vy -= (f.y - (H - m)) * dt * .6;
+      f.x += f.vx * dt; f.y += f.vy * dt;
+
+      if (!f.cache && T - f.born > 2.7) cacheFlower(f);
+      if (!f.dying && T > f.nextRip && T - f.born > 2.5) {
+        addRipple(f.x, f.y, f.R * .95, f.R * 2.6, 3.2, .22);
+        f.nextRip = T + rand(3.5, 7);
+      }
+    }
+    // gentle nudging, like things touching on water
+    for (let i = 0; i < flowers.length; i++) {
+      const a = flowers[i];
+      if (T - a.born < .5) continue;
+      for (let j = i + 1; j < flowers.length; j++) {
+        const b = flowers[j];
+        if (T - b.born < .5) continue;
+        const dx = b.x - a.x, dy = b.y - a.y, d = Math.hypot(dx, dy) || .01, min = (a.R + b.R) * 1.1;
+        if (d < min) {
+          const push = (min - d) * dt * 1.2, ux = dx / d, uy = dy / d;
+          a.x -= ux * push; a.y -= uy * push; b.x += ux * push; b.y += uy * push;
+          a.vx -= ux * push * .5; a.vy -= uy * push * .5; b.vx += ux * push * .5; b.vy += uy * push * .5;
+        }
+      }
+    }
+    for (let i = flowers.length - 1; i >= 0; i--) if (flowers[i].dying && T - flowers[i].dying > 2.6) flowers.splice(i, 1);
+    for (let i = ripples.length - 1; i >= 0; i--) if (T - ripples[i].born > ripples[i].dur) ripples.splice(i, 1);
+    for (let i = parts.length - 1; i >= 0; i--) {
+      const p = parts[i];
+      if (p.kind === 'out' && T >= p.born) { const d = Math.pow(.25, dt); p.vx *= d; p.vy *= d; p.x += p.vx * dt; p.y += p.vy * dt - 6 * S * dt; }
+      if ((p.kind === 'in' && T - p.born > p.dur) || (p.kind === 'out' && T - p.born > p.life)) parts.splice(i, 1);
+    }
+
+    if (!touched && T > nextHint) {
+      addRipple(W * .32, H * .8, 3 * S, 70 * S, 2.4, .45, 0, true);
+      nextHint = T + 3.4;
+    }
+  }
+
+  // ---------- render ----------
+  function render() {
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over';
+    ctx.drawImage(bg, 0, 0);
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+    // slow swell lines
+    ctx.strokeStyle = 'rgba(130,170,240,.05)'; ctx.lineWidth = 1;
+    const gap = 24 * S, step = 18;
+    for (let i = 0, y0 = gap * .5; y0 < H + gap; i++, y0 += gap) {
+      ctx.beginPath();
+      for (let x = -step; x <= W + step; x += step) {
+        const y = y0 + Math.sin(x * .009 + T * .55 + i * .9) * 4 * S + Math.sin(x * .021 - T * .33 + i) * 2 * S;
+        x < 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+    }
+
+    // reflected stars
+    ctx.fillStyle = '#dfe8ff';
+    for (const s of stars) {
+      const a = .25 + .55 * Math.pow(Math.max(0, Math.sin(T * s.sp + s.ph)), 2);
+      ctx.globalAlpha = a;
+      ctx.beginPath(); ctx.arc(s.x + Math.sin(T * .7 + s.ph) * 1.2, s.y, s.r, 0, TAU); ctx.fill();
+    }
+
+    // moon reflection
+    const mr = 30 * S;
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.globalAlpha = .45; ctx.drawImage(PALE, mx - mr * 5, my - mr * 5, mr * 10, mr * 10);
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.globalAlpha = .9; ctx.fillStyle = '#eef2ff';
+    for (let yy = -mr; yy <= mr; yy += 2.4 * S) {
+      const hw = Math.sqrt(Math.max(0, mr * mr - yy * yy));
+      const off = Math.sin(T * 1.7 + yy * .32) * 3 * S * (.4 + Math.abs(yy) / mr);
+      ctx.fillRect(mx - hw + off, my + yy * .86, hw * 2, 1.5 * S);
+    }
+
+    // moonlight glints
+    ctx.lineCap = 'round'; ctx.strokeStyle = '#d9e5ff';
+    for (const g of glints) {
+      const a = g.b * Math.pow(Math.max(0, Math.sin(T * g.sp + g.ph)), 2);
+      if (a < .02) continue;
+      const sw = Math.sin(T * .6 + g.ph) * 5 * S;
+      ctx.globalAlpha = a; ctx.lineWidth = g.w;
+      ctx.beginPath(); ctx.moveTo(g.x - g.l / 2 + sw, g.y); ctx.lineTo(g.x + g.l / 2 + sw, g.y); ctx.stroke();
+    }
+
+    // ripples
+    for (const r of ripples) {
+      const k = (T - r.born) / r.dur;
+      if (k < 0) continue;
+      const rad = r.r0 + (r.r1 - r.r0) * easeOut(k);
+      const a = r.a * Math.pow(1 - k, 1.6);
+      ctx.strokeStyle = r.gold ? '#ffd98a' : '#cfe0ff';
+      ctx.globalAlpha = a; ctx.lineWidth = (1.6 * (1 - k) + .5) * S;
+      ctx.beginPath(); ctx.ellipse(r.x, r.y, rad, rad * .93, 0, 0, TAU); ctx.stroke();
+      ctx.globalAlpha = a * .45;
+      ctx.beginPath(); ctx.ellipse(r.x, r.y, rad * .82, rad * .82 * .93, 0, 0, TAU); ctx.stroke();
+    }
+
+    // flowers
+    for (const f of flowers) {
+      const age = T - f.born;
+      const p = clamp((age - .55) / 2.0);
+      const fade = f.dying ? 1 - clamp((T - f.dying) / 2.6) : 1;
+      const bx = Math.sin(T * .7 + f.ph) * 1.5 * S;
+      const by = Math.sin(T * .9 + f.ph) * 2.6 * S;
+      const sway = Math.sin(T * .45 + f.ph) * .05;
+      const sc = (1 + Math.sin(T * .9 + f.ph + 1.2) * .014) * (f.dying ? 1 - .25 * (1 - fade) : 1);
+      const x = f.x + bx, y = f.y + by, R = f.R;
+
+      // gathering light before the bloom
+      if (age < 1.1) {
+        const k = clamp(age / .6);
+        const a = Math.sin(clamp(age / 1.1) * Math.PI);
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.globalAlpha = a * .9;
+        const s = R * (.4 + 1.6 * k);
+        ctx.drawImage(GOLD, x - s, y - s, s * 2, s * 2);
+        ctx.globalCompositeOperation = 'source-over';
+      }
+      if (p <= 0) continue;
+
+      // shadow on the water + warm light around it
+      const ep = easeOut(p);
+      ctx.globalAlpha = .55 * ep * fade;
+      ctx.drawImage(SHADE, x - R * 1.7 + R * .12, y - R * 1.7 + R * .2, R * 3.4, R * 3.4);
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.globalAlpha = .22 * ep * fade;
+      ctx.drawImage(WARM, x - R * 2.6, y - R * 2.6, R * 5.2, R * 5.2);
+      ctx.globalCompositeOperation = 'source-over';
+
+      ctx.save();
+      ctx.globalAlpha = fade;
+      ctx.translate(x, y);
+      ctx.rotate(f.rot + sway + (1 - ep) * .8);
+      ctx.scale(sc, sc);
+      if (f.cache) ctx.drawImage(f.cache, -f.half, -f.half, f.half * 2, f.half * 2);
+      else drawFlower(ctx, f, p);
+      ctx.restore();
+    }
+
+    // particles
+    ctx.globalCompositeOperation = 'lighter';
+    for (const p of parts) {
+      if (T < p.born) continue;
+      let x, y, a, s;
+      if (p.kind === 'in') {
+        const k = (T - p.born) / p.dur;
+        const r = p.r0 * Math.pow(1 - k, 1.6), ang = p.a0 + p.spin * k;
+        x = p.x0 + Math.cos(ang) * r; y = p.y0 + Math.sin(ang) * r;
+        a = Math.sin(k * Math.PI) * .95; s = p.size * (1 - k * .5);
+      } else {
+        const k = (T - p.born) / p.life;
+        x = p.x; y = p.y; a = (1 - k) * .9 * (.6 + .4 * Math.sin(T * 20 + p.size)); s = p.size * (1 - k * .4);
+      }
+      ctx.globalAlpha = clamp(a);
+      ctx.drawImage(GOLD, x - s, y - s, s * 2, s * 2);
+    }
+
+    // fireflies drifting over the water
+    for (const f of flies) {
+      const x = (f.x + Math.sin(T * f.sp + f.ph) * f.r * .6 + Math.sin(T * f.sp * 2.3 + f.ph * 2) * .02) * W;
+      const y = (f.y + Math.cos(T * f.sp * .8 + f.ph) * f.r * .4) * H;
+      const a = .35 + .65 * Math.pow(Math.max(0, Math.sin(T * 1.3 + f.ph * 3)), 3);
+      const s = 14 * S;
+      ctx.globalAlpha = a * .8;
+      ctx.drawImage(GOLD, x - s, y - s, s * 2, s * 2);
+    }
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.globalAlpha = 1;
+  }
+
+  // ---------- loop ----------
+  let last = performance.now();
+  function frame(now) {
+    let dt = (now - last) / 1000; last = now;
+    if (dt > .05) dt = .05; if (dt < 0) dt = 0;
+    T += dt;
+    update(dt); render();
+    requestAnimationFrame(frame);
+  }
+
+  resize();
+  // one sunflower blooms on its own, to show the magic
+  setTimeout(() => { if (!flowers.length) spawn(W * .5, H * (W > H ? .62 : .6)); }, 1300);
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
